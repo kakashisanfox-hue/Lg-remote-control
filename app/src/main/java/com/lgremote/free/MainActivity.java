@@ -69,7 +69,7 @@ public class MainActivity extends Activity {
   }catch(Exception ignored){}}
   void request(String uri,String payload){if(ws==null||!ws.ready()){message("Conecte a TV primeiro");return;}try{JSONObject j=new JSONObject();j.put("id","req"+(seq++));j.put("type","request");j.put("uri",uri);if(payload!=null)j.put("payload",new JSONObject(payload));ws.send(j.toString());}catch(Exception e){message(e.toString());}}
   void key(String k){if(pointer==null||!pointer.ready()){message("Aguarde a conexão do controle");return;}pointer.send("type:button\nname:"+k+"\n\n");}
-  void launch(String app){request("ssap://system.launcher/launch","{\"id\":\""+app+"\"}");}
+  void launch(String app){String id=appIds.get(app);if(id==null){message("Atalho não encontrado: "+app);request("ssap://com.webos.applicationManager/listApps",null);return;}try{request("ssap://system.launcher/launch",new JSONObject().put("id",id).toString());}catch(Exception e){message(e.toString());}}
   @Override protected void onDestroy(){super.onDestroy();if(ws!=null)ws.close();if(pointer!=null)pointer.close();}
   interface Receive {void accept(String s);}
   interface Failure {void accept(String s);}
