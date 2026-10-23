@@ -17,7 +17,7 @@ import javax.net.ssl.*;
 
 public class MainActivity extends Activity {
   LinearLayout root, panel; EditText ip, text; TextView status; WebSocket ws, pointer;
-  int seq=1; String pointerUrl="", host="";
+  int seq=1; String pointerUrl="", host=""; boolean paired=false; final java.util.Map<String,String> appIds=new java.util.HashMap<>();
   final int bg=0xff10131c, surface=0xff242a38, accent=0xff5b8cff;
   android.content.SharedPreferences prefs;
   interface Tap { void run(); }
@@ -40,14 +40,14 @@ public class MainActivity extends Activity {
     r=row();add(r,"",()->{});add(r,"▲",()->key("UP"));add(r,"",()->{});
     r=row();add(r,"◀",()->key("LEFT"));add(r,"OK",()->key("ENTER"));add(r,"▶",()->key("RIGHT"));
     r=row();add(r,"",()->{});add(r,"▼",()->key("DOWN"));add(r,"",()->{});
-    r=row();add(r,"NETFLIX",()->launch("netflix"));add(r,"PRIME",()->launch("amazon"));add(r,"YOUTUBE",()->launch("youtube.leanback.v4"));
+    r=row();add(r,"NETFLIX",()->launch("netflix"));add(r,"PRIME",()->launch("amazon"));add(r,"YOUTUBE",()->launch("youtube"));
     text=new EditText(this);text.setSingleLine(true);text.setTextColor(-1);text.setHintTextColor(0xff999999);text.setHint("Digite para enviar à TV");panel.addView(text);
     r=row();add(r,"ENVIAR TEXTO",()->{try{JSONObject p=new JSONObject();p.put("text",text.getText().toString());p.put("replace",0);request("ssap://com.webos.service.ime/insertText",p.toString());}catch(Exception e){}});add(r,"APAGAR",()->request("ssap://com.webos.service.ime/deleteCharacters","{\"count\":1}"));
   }
   void message(String s){runOnUiThread(()->status.setText(s));}
   void discover(){message("Procurando TVs LG na rede...");new Thread(()->{try{java.net.DatagramSocket sock=new java.net.DatagramSocket();sock.setSoTimeout(2500);String search="M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: urn:lge-com:service:webos-second-screen:1\r\n\r\n";byte[] q=search.getBytes("UTF-8");sock.send(new java.net.DatagramPacket(q,q.length,java.net.InetAddress.getByName("239.255.255.250"),1900));long until=System.currentTimeMillis()+5000;boolean found=false;while(System.currentTimeMillis()<until){try{byte[] buf=new byte[4096];java.net.DatagramPacket packet=new java.net.DatagramPacket(buf,buf.length);sock.receive(packet);String response=new String(packet.getData(),0,packet.getLength(),"UTF-8").toLowerCase(java.util.Locale.ROOT);if(response.contains("webos")||response.contains("lge")){String address=packet.getAddress().getHostAddress();runOnUiThread(()->{ip.setText(address);message("TV encontrada: "+address);connect();});found=true;break;}}catch(java.net.SocketTimeoutException ignored){break;}}sock.close();if(!found)message("TV não encontrada. Digite o IP manualmente.");}catch(Exception e){message("Busca indisponível: "+e.getMessage());}}).start();}
   void connect(){
-    host=ip.getText().toString().trim();if(!host.matches("[0-9.]+")){message("Informe o IP da TV");return;}
+    paired=false;appIds.clear();if(pointer!=null){pointer.close();pointer=null;}host=ip.getText().toString().trim();if(!host.matches("(?:[0-9]{1,3}\\.){3}[0-9]{1,3}")){message("Informe o IP da TV");return;}
     prefs.edit().putString("ip",host).apply();if(ws!=null)ws.close();
     message("Conectando...");ws=new WebSocket("ws://"+host+":3000",this::received,()->{message("Conectado: aceite o pareamento na TV");register();},e->message("Falha de conexão: "+e));
     ws.open();
@@ -62,7 +62,8 @@ public class MainActivity extends Activity {
     payload.put("manifest",manifest);reg.put("payload",payload);ws.send(reg.toString());
   }catch(Exception e){message(e.toString());}}
   void received(String data){try{JSONObject j=new JSONObject(data);String type=j.optString("type");JSONObject p=j.optJSONObject("payload");
-    if("registered".equals(type)){if(p!=null){String k=p.optString("client-key");if(!k.isEmpty())prefs.edit().putString("key",k).apply();}message("TV conectada ✓");request("ssap://com.webos.service.networkinput/getPointerInputSocket",null);}
+    if("registered".equals(type)){if(p!=null){String k=p.optString("client-key");if(!k.isEmpty())prefs.edit().putString("key",k).apply();}paired=true;message("TV conectada ✓");request("ssap://com.webos.service.networkinput/getPointerInputSocket",null);request("ssap://com.webos.applicationManager/listApps",null);}
+    if("response".equals(type)&&p!=null&&p.has("apps")){JSONArray apps=p.optJSONArray("apps");if(apps!=null)for(int i=0;i<apps.length();i++){JSONObject a=apps.optJSONObject(i);if(a==null)continue;String id=a.optString("id");String title=a.optString("title").toLowerCase(java.util.Locale.ROOT);String all=(id+" "+title).toLowerCase(java.util.Locale.ROOT);if(all.contains("netflix"))appIds.put("netflix",id);if(all.contains("amazon")||all.contains("prime video"))appIds.put("amazon",id);if(all.contains("youtube"))appIds.put("youtube",id);}}
     if("response".equals(type)&&p!=null&&p.has("socketPath")){pointerUrl=p.getString("socketPath");pointer=new WebSocket(pointerUrl,d->{},()->message("TV conectada ✓"),e->message("Controle direcional indisponível"));pointer.open();}
     if("error".equals(type))message("TV: "+j.optString("error"));
   }catch(Exception ignored){}}
@@ -91,7 +92,7 @@ public class MainActivity extends Activity {
     }catch(Exception e){failure.accept(e.getMessage()==null?e.toString():e.getMessage());}finally{active=false;close();}}).start();}
     static int read(InputStream in)throws IOException{int x=in.read();if(x<0)throw new EOFException();return x;}
     static void readFully(InputStream in,byte[] data)throws IOException{int n=0;while(n<data.length){int x=in.read(data,n,data.length-n);if(x<0)throw new EOFException();n+=x;}}
-    synchronized void frame(int opcode,byte[] bytes)throws IOException{if(!active||out==null)return;out.write(0x80|opcode);int n=bytes.length;if(n<126)out.write(0x80|n);else if(n<=65535){out.write(0x80|126);out.write(n>>8);out.write(n);}else{out.write(0x80|127);for(int i=7;i>=0;i--)out.write((n>>(8*i))&255);}byte[] mask=new byte[4];new java.security.SecureRandom().nextBytes(mask);out.write(mask);for(int i=0;i<n;i++)out.write(bytes[i]^mask[i%4]);out.flush();}
+    synchronized void frame(int opcode,byte[] bytes)throws IOException{if(!active||out==null)return;out.write(0x80|opcode);int n=bytes.length;if(n<126)out.write(0x80|n);else if(n<=65535){out.write(0x80|126);out.write(n>>8);out.write(n);}else{out.write(0x80|127);for(int i=7;i>=0;i--)out.write(((long)n>>(8*i))&255);}byte[] mask=new byte[4];new java.security.SecureRandom().nextBytes(mask);out.write(mask);for(int i=0;i<n;i++)out.write(bytes[i]^mask[i%4]);out.flush();}
     void send(String s){try{frame(1,s.getBytes("UTF-8"));}catch(Exception e){failure.accept(e.toString());}}
     void close(){active=false;try{if(socket!=null)socket.close();}catch(Exception ignored){}}
   }
